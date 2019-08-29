@@ -1,0 +1,81 @@
+--- main.cc	2019-08-29 15:06:20.067727000 +0800
++++ main_rr.cc	2019-08-29 15:39:43.476553785 +0800
+@@ -179,15 +179,61 @@
+  *
+  * @return none
+  */
++FILE *pfile;
++void openfile(const char* path)
++{
++    pfile = fopen(path,"r");
++    if(pfile == NULL)
++    {
++        printf("Open failure\n");
++        return;
++    }
++
++}
++
++int readfile(unsigned char* buffer)
++{
++    int read_bytes_num = fread( buffer, 1, 512*256*3, pfile );
++    return read_bytes_num;
++     
++}
++
++
++
+ void Read(bool &is_reading) {
+     while (is_reading) {
++
++
++#if 0
+         Mat img;
++#else
++        Mat img(256,512,CV_8UC3);
++#endif
++
++
+         if (read_queue.size() < 30) {
++
++#if 0
+             if (!video.read(img)) {
+                 cout << "Finish reading the video." << endl;
+                 is_reading = false;
+                 break;
+             }
++#else
++	    	
++            int ret = readfile(img.data);
++            if(ret<=0)
++            {
++                cout << "Finish reading raw image!" << endl;
++                is_reading = false;
++                fclose(pfile);
++                break;
++	
++            }
++#endif
++
++
++
+             mtx_read_queue.lock();
+             read_queue.push(make_pair(read_index++, img));
+             mtx_read_queue.unlock();
+@@ -262,11 +308,16 @@
+     // Initializations
+     string file_name = argv[1];
+     cout << "Detect video: " << file_name << endl;
++
++#if 0
+     video.open(file_name);
+     if (!video.isOpened()) {
+         cout << "Failed to open video: " << file_name;
+         return -1;
+     }
++#else
++    openfile(argv[1]);
++#endif
+ 
+     // Run tasks for SSD
+     array<thread, 4> threads = {thread(Read, ref(is_reading)),

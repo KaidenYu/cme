@@ -1,0 +1,81 @@
+--- main.cc	2019-08-07 18:49:15.000000000 +0800
++++ main_rr.cc	2019-08-29 17:57:29.000000000 +0800
+@@ -147,6 +147,24 @@
+  *
+  * @return none
+  */
++FILE *pfile;
++void openfile(const char* path)
++{
++    pfile = fopen(path,"r");
++    if(pfile == NULL)
++    {
++        printf("Open failure\n");
++        return;
++    }
++
++}
++
++int readfile(unsigned char* buffer)
++{
++    int read_bytes_num = fread( buffer, 1, 512*256*3, pfile );
++    return read_bytes_num;
++     
++}
+ void readFrame(const char *fileName) {
+     static int loop = 3;
+     VideoCapture video;
+@@ -155,18 +173,41 @@
+ 
+     while (loop>0) {
+         loop--;
++#if 0
+         if (!video.open(videoFile)) {
+             cout<<"Fail to open specified video file:" << videoFile << endl;
+             exit(-1);
+         }
++#else
++        openfile(fileName);
++#endif
+ 
+         while (true) {
+             usleep(20000);
++
++#if 0
+             Mat img;
++#else
++            Mat img(256,512,CV_8UC3);
++#endif
++
++
+             if (queueInput.size() < 30) {
++#if 0
+                 if (!video.read(img) ) {
+                     break;
+                 }
++#else
++            int ret = readfile(img.data);
++            if(ret<=0)
++            {
++                cout << "Finish reading raw image!" << endl;
++                bReading = false;
++                fclose(pfile);
++                break;
++	
++            }
++#endif
+ 
+                 mtxQueueInput.lock();
+                 queueInput.push(make_pair(idxInputImage++, img));
+@@ -175,8 +216,10 @@
+                 usleep(10);
+             }
+         }
+-
++#if 0
+         video.release();
++#endif
++        
+     }
+ 
+     exit(0);

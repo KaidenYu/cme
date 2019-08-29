@@ -1,0 +1,291 @@
+--- main.cc	2019-08-29 15:06:20.067727000 +0800
++++ main_fb.cc	2019-08-29 16:41:30.000000000 +0800
+@@ -62,6 +62,27 @@
+ // Header files for DNNDK APIs
+ #include <dnndk/dnndk.h>
+ 
++///////kaiden//////start
++#include <stdio.h>
++#include <stdlib.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <errno.h>
++#include <linux/fb.h>
++#include <sys/ioctl.h>
++
++#include <sys/mman.h>
++#define FB0 "/dev/fb0"
++
++int fd = 0;
++char *fd_map = NULL;
++// 固定参数
++struct fb_fix_screeninfo fix_info;
++// 可变参数
++struct fb_var_screeninfo var_info;
++int ret = -1;
++int screen_size = 0;
++///////kaiden//////end
+ using namespace std;
+ using namespace std::chrono;
+ using namespace cv;
+@@ -169,6 +190,10 @@
+         mtx_display_queue.lock();
+         display_queue.push(make_pair(index, img));
+         mtx_display_queue.unlock();
++
++
++
++
+     }
+ }
+ 
+@@ -179,15 +204,61 @@
+  *
+  * @return none
+  */
++FILE *pfile;
++void openfile(const char* path)
++{
++    pfile = fopen(path,"r");
++    if(pfile == NULL)
++    {
++        printf("Open failure\n");
++        return;
++    }
++
++}
++
++int readfile(unsigned char* buffer)
++{
++    int read_bytes_num = fread( buffer, 1, 512*256*3, pfile );
++    return read_bytes_num;
++     
++}
++
++
++
+ void Read(bool &is_reading) {
+     while (is_reading) {
++
++
++#if 0
+         Mat img;
++#else
++        Mat img(256,512,CV_8UC3);
++#endif
++
++
+         if (read_queue.size() < 30) {
++
++#if 0
+             if (!video.read(img)) {
+                 cout << "Finish reading the video." << endl;
+                 is_reading = false;
+                 break;
+             }
++#else
++	    	
++            int ret = readfile(img.data);
++            if(ret<=0)
++            {
++                cout << "Finish reading raw image!" << endl;
++                is_reading = false;
++                fclose(pfile);
++                break;
++	
++            }
++#endif
++
++
++
+             mtx_read_queue.lock();
+             read_queue.push(make_pair(read_index++, img));
+             mtx_read_queue.unlock();
+@@ -204,7 +275,7 @@
+  *
+  * @return none
+  */
+-void Display(bool &is_displaying) {
++void Display(DPUTask *task, bool &is_displaying) {
+     while (is_displaying) {
+         mtx_display_queue.lock();
+         if (display_queue.empty()) {
+@@ -217,7 +288,29 @@
+             }
+         } else if (display_index == display_queue.top().first) {
+             // Display image
++#if 0			
+             imshow("Segmentaion @Xilinx DPU", display_queue.top().second);
++#else
++			DPUTensor *conv_in_tensor = dpuGetInputTensor(task, CONV_INPUT_NODE);
++    		int inHeight = dpuGetTensorHeight(conv_in_tensor);
++    		int inWidth = dpuGetTensorWidth(conv_in_tensor);
++			int offset_x = (var_info.xres-inWidth)/2;
++			int offset_y = (var_info.yres-inHeight)/2;
++			unsigned char* ptr = display_queue.top().second.data;
++    		for(unsigned int i = 0; i < inHeight; i++)
++	    	{
++	        
++	        	for(int j = 0; j < inWidth; j++)
++	        	{
++	        		unsigned char b_tmp = (*(ptr+j*3+i*inWidth*3+0))>>3;
++	        		unsigned char g_tmp = (*(ptr+j*3+i*inWidth*3+1))>>2;
++	        		unsigned char r_tmp = (*(ptr+j*3+i*inWidth*3+2))>>3;
++	        		unsigned short bgr=(r_tmp<<11)+(g_tmp<<5)+b_tmp;
++
++	            	*((unsigned short *)(fd_map + (j+offset_x)*2 + (i+offset_y) * var_info.xres * 2 )) = bgr;
++            	}
++	    	}
++#endif			
+             display_index++;
+             display_queue.pop();
+             mtx_display_queue.unlock();
+@@ -226,6 +319,7 @@
+                 is_running_1 = false;
+                 is_running_2 = false;
+                 is_displaying = false;
++                munmap(fd_map, screen_size); //kaiden
+                 break;
+             }
+         } else {
+@@ -234,6 +328,100 @@
+     }
+ }
+ 
++
++int frame_buffer_initial()
++{
++	/////////////////////////////////kaiden//////////////////////////////////////start
++    memset(&fix_info, 0, sizeof(struct fb_fix_screeninfo));
++    memset(&var_info, 0, sizeof(struct fb_var_screeninfo));
++    
++    fd = open(FB0, O_RDWR);
++    if(fd < 0)
++    {
++        char *error_msg = strerror(errno);
++        printf("Open %s failed, errno:%d, error message:%s\n", 
++            FB0, errno, error_msg);
++        return -1;
++    }
++
++    // get varied info
++    ret = ioctl(fd, FBIOGET_VSCREENINFO, &var_info);
++    if(ret < 0)
++    {
++        char *error_msg = strerror(errno);
++        printf("Get %s var info error, errno:%d, error message:%s\n", 
++            FB0, errno, error_msg);
++        return ret;
++    }
++
++    // get fix info
++    ret = ioctl(fd, FBIOGET_FSCREENINFO, &fix_info);
++    if(ret < 0)
++    {
++        char *error_msg = strerror(errno);
++        printf("Get %s fix info error, errno:%d, error message:%s\n", 
++            FB0, errno, error_msg);
++        return ret;
++    }
++
++    printf("%s var info, xres=%d, yres=%d\n", FB0, var_info.xres, var_info.yres);
++    printf("%s var info, xres_virtual=%d, yres_virtual=%d\n", 
++        FB0, var_info.xres_virtual, var_info.yres_virtual);
++    printf("%s var info, bits_per_pixel=%d\n", FB0, var_info.bits_per_pixel);
++    printf("%s var info, xoffset=%d, yoffset=%d\n", 
++        FB0, var_info.xoffset, var_info.yoffset);
++    printf("r_len=%d,r_off=%d,g_len=%d,g_off=%d,b_len=%d,b_off=%d"
++    	,var_info.red.length
++    	,var_info.red.offset
++    	,var_info.green.length
++    	,var_info.green.offset
++		,var_info.blue.length
++    	,var_info.blue.offset);
++
++#if 0 // try to modify RGB565 to RGB888 but failed
++    var_info.bits_per_pixel = 24;
++	ret = ioctl(fd, FBIOPUT_VSCREENINFO, &var_info);
++	if (ret)
++		printf("Error\n");
++	else
++		printf("Bits per pixel set\n");
++	
++
++	printf("%s var info, xres=%d, yres=%d\n", FB0, var_info.xres, var_info.yres);
++    printf("%s var info, xres_virtual=%d, yres_virtual=%d\n", 
++        FB0, var_info.xres_virtual, var_info.yres_virtual);
++    printf("%s var info, bits_per_pixel=%d\n", FB0, var_info.bits_per_pixel);
++    printf("%s var info, xoffset=%d, yoffset=%d\n", 
++        FB0, var_info.xoffset, var_info.yoffset);
++    printf("r_len=%d,r_off=%d,g_len=%d,g_off=%d,b_len=%d,b_off=%d"
++    	,var_info.red.length
++    	,var_info.red.offset
++    	,var_info.green.length
++    	,var_info.green.offset
++		,var_info.blue.length
++    	,var_info.blue.offset);
++#endif
++
++    screen_size = var_info.xres * var_info.yres * var_info.bits_per_pixel / 8;
++
++    // mmap frame buffer to user space
++    fd_map = (char *)mmap(NULL, screen_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
++    if(fd_map == (char *)-1)
++    {
++        char *error_msg = strerror(errno);
++        printf("Mmap %s failed, errno:%d, error message:%s\n", 
++            FB0, errno, error_msg);
++        return -1;
++    }
++
++    //munmap(fd_map, screen_size);
++    //close(fd);
++/////////////////////////////////kaiden//////////////////////////////////////end
++}
++
++
++
++
+ /**
+  * @brief Entry for runing Segmentation neural network
+  *
+@@ -252,6 +440,7 @@
+         return -1;
+     }
+ 
++	frame_buffer_initial(); //kaiden
+     // Attach to DPU driver and prepare for runing
+     dpuOpen();
+     // Create DPU Kernels and Tasks for CONV Nodes in SSD
+@@ -262,17 +451,22 @@
+     // Initializations
+     string file_name = argv[1];
+     cout << "Detect video: " << file_name << endl;
++
++#if 0
+     video.open(file_name);
+     if (!video.isOpened()) {
+         cout << "Failed to open video: " << file_name;
+         return -1;
+     }
++#else
++    openfile(argv[1]);
++#endif
+ 
+     // Run tasks for SSD
+     array<thread, 4> threads = {thread(Read, ref(is_reading)),
+                                 thread(runSegmentation, task_conv_1, ref(is_running_1)),
+                                 thread(runSegmentation, task_conv_2, ref(is_running_2)),
+-                                thread(Display, ref(is_displaying))};
++                                thread(Display, task_conv_1, ref(is_displaying))};
+ 
+     for (int i = 0; i < 4; ++i) {
+         threads[i].join();
+@@ -287,5 +481,7 @@
+ 
+     video.release();
+ 
++    munmap(fd_map, screen_size); //kaiden
++
+     return 0;
+ }
